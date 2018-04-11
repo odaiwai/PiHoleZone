@@ -1,0 +1,8 @@
+*~
+
+lists\$list_filename
+
+*.swp
+*.log
+
+adblock_named\.file
