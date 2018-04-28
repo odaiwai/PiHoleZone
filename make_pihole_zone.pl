@@ -32,11 +32,6 @@ foreach my $domain (@domains) {
 	my $address_ok = 1;
 	# Check for reasons to not printout the line
 	if ( length($domain) < 1) { $address_ok = 0; }
-	if ( $domain =~ /([#]+.*$)/) { 
-		$domain =~ s/$1//g; 
-		$domain  =~ s/\s+$//g; # remove trailing spaces
-	}
-	if ( $domain =~ /[_]+/) { $address_ok = 0; } # Underscores are illegal in domain names
 	foreach my $whitelist (@whitelists) {
 		if ($domain =~ /$whitelist/) {
 			$address_ok = 0;
@@ -95,14 +90,14 @@ sub parse_lists {
 				$list_filename =~ s/^http[s]*\:\/\///g;
 				$list_filename =~ s#\/#_#g;
 				open ( my $listfh, ">", "lists/" . $list_filename);
-				print $listfh, $agent->content();
+				print $listfh $agent->content();
 				close $listfh;
 			}
 			my @urls = split("\n", $agent->content());
 			foreach my $line (@urls) {
 				chomp ($line);
 				$line = lc(sanitize($line));
-				print "\tLine: '$line'\n" if $verbose;
+				print "\tLine: '$line':" if $verbose;
 				my $domain = "";
 				# check for comments
 				if ($line =~ /^\#+/ ) { } #comment, ignore }
@@ -110,18 +105,29 @@ sub parse_lists {
 				if ($line =~ /^([0-9a-f.:]+)[ \t]+(.*)$/ ) { $domain = $2; 	}
 				# check for just a hostname
 				if ($line =~ /^([a-z0-9.-]+)$/ ) { $domain = $1;}
-				# Prepare the Zone Line
-				if (length($domain) > 0) {
-				 	$domains{$domain}++;
-				 	print "\tDomain: $domain ($domains{$domain})\n" if $verbose;
-					push @domains, $domain if ($domains{$domain}==1);
+				# remove trailing comments on some domains
+				if ( $domain =~ /([#]+.*$)/) { 
+					$domain =~ s/$1//g; 
 				}
-				#sleep 1;
+				# delete domains that are not legal hostnames
+				my $domain_legal = 1;
+				if ( $domain =~ /^\-|\-$/) { $domain_legal = 0; } # leading/trailing hyphen illegal
+				if ( $domain =~ /[\\\?_]+/) { $domain_legal = 0; } # illegal chars
+				#if ( $domain =~ /xn\-\-huala/) { $domain_legal = 0; } # illegal chars
+				#if ( $domain =~ /hualaihue/) { $domain_legal = 0; } # illegal chars
+				#if ( $domain =~ /bireysel/) { $domain_legal = 0; } # no idea
+				if ( length($domain) == 0) { $domain_legal = 0; } 
+				$domain  =~ s/\s+$//g; # remove trailing spaces
+				# Add the domain to the list
+				if ( $domain_legal ) {
+				 	$domains{$domain}++;
+				 	print "\tDomain accepted: $domain ($domains{$domain})" if $verbose;
+					push @domains, $domain if ($domains{$domain}<2);
+				}
+				print "\n" if $verbose;
 			}
 		}
-		#sleep 2;
 	}
-	
 	return @domains;
 }
 
@@ -157,6 +163,15 @@ sub whitelist {
 	push @whitelist, "microsoft.com";
 	push @whitelist, "google.com";
 	push @whitelist, "diaspoir.net";
+	push @whitelist, "zdbb.net";
+	push @whitelist, "prf.hn"; # some marketing bullshit that iMore refuses to run without
+	push @whitelist, "s1.wp.com"; # needed for WP hosted stylesheets
+	push @whitelist, "stats.wp.com"; # WP Hosted Stats
+	push @whitelist, "cpan.org"; # CPAN
+	push @whitelist, "www.linkedin.com"; # CPAN
+	push @whitelist, "ads.linkedin.com"; # CPAN
+	push @whitelist, "cedexis.net"; # CPAN
+	push @whitelist, "list-manage.com"; # CPAN
 	return @whitelist;
 }
 sub get_lists_locally {
@@ -173,5 +188,6 @@ sub get_lists_locally {
 sub sanitize {
 	my $input = shift;
 	$input =~ s/\x0d$//;
+	$input =~ s/[^[:ascii:]]//; #non-ascii characters
 	return $input;
 }
