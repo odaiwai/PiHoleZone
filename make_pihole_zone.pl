@@ -3,7 +3,7 @@ use strict;
 use warnings;
 use WWW::Mechanize;
 
-# Script to automatically download the blocklists from the PiHole project and 
+# Script to automatically download the blocklists from the PiHole project and
 # Convert them to zone files for use with Bind.
 #
 # (C) Dave O'Brien, 20180407
@@ -16,11 +16,11 @@ my ($ticked, $uncrossed, $all) = (1,0,0);
 
 
 my @lists;
-if ($download) {
-	@lists = get_lists();
+if ( $download ) {
+    @lists = get_lists();
 } else {
-	#have a locally stored list for testing (-1 for all lists, )
-	@lists = get_lists_locally(-1);
+    #have a locally stored list for testing (-1 for all lists, )
+    @lists = get_lists_locally(-1);
 }
 print "@lists" if $verbose;
 
@@ -29,46 +29,46 @@ open (my $fh, ">", "adblock_named.file");
 my @whitelists = whitelist();
 my $count = 0;
 foreach my $domain (@domains) {
-	my $address_ok = 1;
-	# Check for reasons to not printout the line
-	if ( length($domain) < 1) { $address_ok = 0; }
-	foreach my $whitelist (@whitelists) {
-		if ($domain =~ /$whitelist/) {
-			$address_ok = 0;
-		}
-	}
-	if ($count <= $zone_limit) {
-		my $zoneline = "zone \"$domain\" { type master; notify no; file \"named.adblock\"; allow-query { allowed; }; };";
-		print "\t$count: $zoneline\n" if $verbose;
-		print $fh "$zoneline\n" if $address_ok;
-		$count++;
-	}
+    my $address_ok = 1;
+    # Check for reasons to not printout the line
+    if ( length($domain) < 1) { $address_ok = 0; }
+    foreach my $whitelist (@whitelists) {
+        if ($domain =~ /$whitelist/) {
+            $address_ok = 0;
+        }
+    }
+    if ($count <= $zone_limit) {
+        my $zoneline = "zone \"$domain\" { type master; notify no; file \"named.adblock\"; allow-query { allowed; }; };";
+        print "\t$count: $zoneline\n" if $verbose;
+        print $fh "$zoneline\n" if $address_ok;
+        $count++;
+    }
 }
 
 close $fh;
 
 sub get_lists {
-	# Fetches a list of host files from three urls and downloads each file
-	my @lists;
-	my @blocklists;
-	# Lists from here: https://v.firebog.net/hosts/lists.php
-	push @lists, "https://v.firebog.net/hosts/lists.php?type=tick" if $ticked;
-	push @lists, "https://v.firebog.net/hosts/lists.php?type=nocross" if $uncrossed;
-	push @lists, "https://v.firebog.net/hosts/lists.php?type=all" if $all;
-	my $agent =  WWW::Mechanize->new( autocheck => 1);
-	foreach my $list (@lists) {
-		print "Retrieving $list..." if $verbose;
-		$agent->get($list);
-		if ($agent->success) {
-			my @urls = split("\n", $agent->content());
-			push @blocklists, @urls;
-			print "$#urls added.\n" if $verbose;
-		}
-	}
-	# foreach list, put the list into an array @urls, and check for duplicates.
-	# then, download each list and put the individual entries into an array
-	#print join ", ", @blocklists;
-	return @blocklists;
+    # Fetches a list of host files from three urls and downloads each file
+    my @lists;
+    my @blocklists;
+    # Lists from here: https://v.firebog.net/hosts/lists.php
+    push @lists, "https://v.firebog.net/hosts/lists.php?type=tick" if $ticked;
+    push @lists, "https://v.firebog.net/hosts/lists.php?type=nocross" if $uncrossed;
+    push @lists, "https://v.firebog.net/hosts/lists.php?type=all" if $all;
+    my $agent =  WWW::Mechanize->new( autocheck => 1);
+    foreach my $list (@lists) {
+        print "Retrieving $list..." if $verbose;
+        $agent->get($list);
+        if ($agent->success) {
+            my @urls = split("\n", $agent->content());
+            push @blocklists, @urls;
+            print "$#urls added.\n" if $verbose;
+        }
+    }
+    # foreach list, put the list into an array @urls, and check for duplicates.
+    # then, download each list and put the individual entries into an array
+    #print join ", ", @blocklists;
+    return @blocklists;
 }
 
 sub parse_lists {
