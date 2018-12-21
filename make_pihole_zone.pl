@@ -188,6 +188,7 @@ sub whitelist {
     push @whitelist, "kinja.com"; #
     push @whitelist, "mailchimp.com"; #
     push @whitelist, "typepad.com"; #
+    push @whitelist, "clickdimensions.com"; #
     push @whitelist, "exacttarget.com"; #
     push @whitelist, "iopscience.iop.org"; #
     push @whitelist, "gstatic.com"; # Google Static Domains
