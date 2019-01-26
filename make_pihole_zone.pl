@@ -3,6 +3,10 @@ use strict;
 use warnings;
 use WWW::Mechanize;
 
+# my own library
+use lib "/home/odaiwai/src/dob_DBHelper";
+use DBHelper;
+
 # Script to automatically download the blocklists from the PiHole project and
 # Convert them to zone files for use with Bind.
 #
@@ -14,35 +18,56 @@ my $download = 0;
 my $zone_limit = 1000000; # how many zones in the file
 my ($ticked, $uncrossed, $all) = (1,0,0);
 
+# initialise the database
+my $dbname = "pihole.sqlite";
+my $db = dbconnect($dbname);
 
-my @lists;
+# If we're downloading, rebuild the database from scratch
 if ( $download ) {
-    @lists = get_lists();
-} else {
-    #have a locally stored list for testing (-1 for all lists, )
-    @lists = get_lists_locally(-1);
+    my $num_tables = create_db($db);
+    my @lists = get_lists();
+    print "@lists" if $verbose;
+    my @domains = parse_lists (@lists);
+    
 }
-print "@lists" if $verbose;
 
-my @domains = parse_lists (@lists);
-open (my $fh, ">", "adblock_named.file");
+# Apply the whitelist - do this here to allow for changes to the whitelist without
+# downloading everthing.
 my @whitelists = whitelist();
-my $count = 0;
-foreach my $domain (@domains) {
-    my $address_ok = 1;
-    # Check for reasons to not printout the line
-    if ( length($domain) < 1) { $address_ok = 0; }
+my @urls = array_from_query( $db, "select url from [entries] group by url;", $verbose);
+
+# Go through the list
+my $result = dbdo( $db, "BEGIN", $verbose);
+foreach my $url (@urls) {
+    # check if it's on the whitelist
+    my $whitelisted = 0;
+    my @reasons;
     foreach my $whitelist (@whitelists) {
-        if ($domain =~ /$whitelist/) {
-            $address_ok = 0;
+        if ($url =~ /$whitelist$/) {
+            $whitelisted++;
+            push @reasons, $whitelist;
         }
     }
-    if ($count <= $zone_limit) {
-        my $zoneline = "zone \"$domain\" { type master; notify no; file \"named.adblock\"; allow-query { allowed; }; };";
-        print "\t$count: $zoneline\n" if $verbose;
-        print $fh "$zoneline\n" if $address_ok;
-        $count++;
-    }
+    if ( $whitelisted > 0 ) {
+        my $reasons = join ";", @reasons;
+        print "\t$url: $whitelisted ($reasons)\n" if $verbose;
+        my $result = dbdo($db, "Update [Entries] set whitelist = $whitelisted, reasons = \"$reasons\" where URL = \'$url\';", $verbose);
+    } 
+}
+my $result = dbdo( $db, "COMMIT", $verbose);
+
+# Make the named.file
+open (my $fh, ">", "adblock_named.file");
+my $count = 0;
+
+# Get the list of domains
+my $query = querydb( $db, "select url, source, ticked, whitelist from [entries] where (Ticked = 1 and Whitelist = 0) group by url;", $verbose);
+while (my @row = $query->fetchrow_array) {
+    my ($url, $source, $ticked, $whitelist) = @row;
+    my $zoneline = "zone \"$url\" { type master; notify no; file \"named.adblock\"; allow-query { allowed; }; }; # $source";
+    print "\t$zoneline\n" if $verbose;
+    print $fh "$zoneline\n";
+    $count++;
 }
 
 close $fh;
@@ -51,24 +76,65 @@ sub get_lists {
     # Fetches a list of host files from three urls and downloads each file
     my @lists;
     my @blocklists;
+    my @categories = qw/all_lists uncrossed ticked/;
+    
     # Lists from here: https://v.firebog.net/hosts/lists.php
-    push @lists, "https://v.firebog.net/hosts/lists.php?type=tick" if $ticked;
-    push @lists, "https://v.firebog.net/hosts/lists.php?type=nocross" if $uncrossed;
-    push @lists, "https://v.firebog.net/hosts/lists.php?type=all" if $all;
+    $lists[0] = "https://v.firebog.net/hosts/lists.php?type=all";   
+    $lists[1] = "https://v.firebog.net/hosts/lists.php?type=nocross";
+    $lists[2] = "https://v.firebog.net/hosts/lists.php?type=tick";    
+    
+    # 
+    my $idx = 0;
+    my %lists;
+    
     my $agent =  WWW::Mechanize->new( autocheck => 1);
     foreach my $list (@lists) {
         print "Retrieving $list..." if $verbose;
         $agent->get($list);
         if ($agent->success) {
             my @urls = split("\n", $agent->content());
-            push @blocklists, @urls;
+            my $category = $categories[$idx];
+            
+            # store the urls
+            my $result = dbdo( $db, "BEGIN", $verbose);
+            foreach my $url (@urls) {
+                $lists{$url}++;
+                # for the all list, set to 0,0,1 as the entry is almost certainly not in the database
+                if ( $idx == 0 ) {
+                    my $result = dbdo($db, "Insert or ignore into [Lists] (URL, ticked, uncrossed, all_lists) Values (\"$url\", 0, 0, 1);", $verbose);
+                    push @blocklists, $url;
+                } else {
+                    # check if the URL is already in the dbase:
+                    if ( exists($lists{$url}) ) {
+                        my $result = dbdo($db, "Update [Lists] set $category = 1 where URL = \'$url\';", $verbose);
+                    } else {
+                        my $result = dbdo($db, "Insert or ignore into [Lists] (URL, $category) Values (\"$url\", 1);", $verbose);
+                    }
+                }
+            }
+            $result = dbdo( $db, "COMMIT", $verbose);
             print "$#urls added.\n" if $verbose;
         }
+        $idx++;
     }
     # foreach list, put the list into an array @urls, and check for duplicates.
     # then, download each list and put the individual entries into an array
     #print join ", ", @blocklists;
     return @blocklists;
+}
+
+sub create_db {
+    my $db = shift;
+	drop_all_tables($db, "", $verbose); # Middle var is prefix, for dropping tables of the form
+                                        # apple_this, apple_that, etc, where 'apple' is the prefix
+     
+    my %tables;
+    $tables{"lists"} = "URL Text, Ticked Integer, Uncrossed Integer, All_lists Integer";
+    $tables{"entries"} = "URL Text Primary Key, Source TEXT, Count Integer, Comment TEXT, Ticked Integer, Uncrossed Integer, All_lists Integer, Whitelist Integer, reasons TEXT";
+    my $num_tables = make_db($db, \%tables, $verbose);
+    my $result = dbdo($db, "vacuum", $verbose);
+    
+    return $num_tables;
 }
 
 sub parse_lists {
@@ -79,36 +145,49 @@ sub parse_lists {
     my @lists = @_;
     my @domains;
     my %domains;
+    my @whitelist = whitelist();
+    
     my $agent =  WWW::Mechanize->new( autocheck => 1);
     foreach my $list (@lists) {
         print "Getting $list\n" if $verbose;
+        
+        # Get it's classification from the dbase;
+        my @row = row_from_query($db, "select Ticked, Uncrossed, All_lists from [Lists] where url = '$list';", $verbose);
+        my ($ticked, $uncrossed, $all) = @row;
+        print "\t$list: $ticked, $uncrossed, $all\n" if $verbose;
+        
         $agent->get($list);
         if ($agent->success) {
-            if ($download == 0) {
-                # save the lists
-                my $list_filename = $list;
-                $list_filename =~ s/^http[s]*\:\/\///g;
-                $list_filename =~ s#\/#_#g;
-                open ( my $listfh, ">", "lists/" . $list_filename);
-                print $listfh $agent->content();
-                close $listfh;
-            }
             my @urls = split("\n", $agent->content());
+            
+            # Parse each list as a separate transaction
+            my $result = dbdo( $db, "BEGIN", $verbose);
             foreach my $line (@urls) {
                 chomp ($line);
                 $line = lc(sanitize($line));
                 print "\tLine: '$line':" if $verbose;
-                my $domain = "";
-                # check for comments
-                if ($line =~ /^\#+/ ) { } #comment, ignore }
+                my $domain  = "";
+                my $comment = "";
+                
+                # Check for the various types of record:
+                if ($line =~ /^\#+/ ) {
+                    # general comment, ignore }
+                }
+                
                 # check for a.b.c.d hostname
-                if ($line =~ /^([0-9a-f.:]+)[ \t]+(.*)$/ ) { $domain = $2;  }
+                if ($line =~ /^([0-9a-f.:]+)[ \t]+(.*)$/ ) {
+                    $domain = $2;
+                }
+                
                 # check for just a hostname
                 if ($line =~ /^([a-z0-9.-]+)$/ ) { $domain = $1;}
+                
                 # remove trailing comments on some domains
-                if ( $domain =~ /([#]+.*$)/) {
-                    $domain =~ s/$1//g;
+                if ( $domain =~ /^(.*)\#(.*)$/) {
+                    $domain  = $1;
+                    $comment = $2;
                 }
+                
                 # delete domains that are not legal hostnames
                 my $domain_legal = 1;
                 if ( $domain =~ /^\-|\-$/) { $domain_legal = 0; } # leading/trailing hyphen illegal
@@ -118,14 +197,28 @@ sub parse_lists {
                 #if ( $domain =~ /bireysel/) { $domain_legal = 0; } # no idea
                 if ( length($domain) == 0) { $domain_legal = 0; }
                 $domain  =~ s/\s+$//g; # remove trailing spaces
+
                 # Add the domain to the list
                 if ( $domain_legal ) {
                     $domains{$domain}++;
                     print "\tDomain accepted: $domain ($domains{$domain})" if $verbose;
-                    push @domains, $domain if ($domains{$domain}<2);
+                    if ($domains{$domain}<2) {
+                        # to avoid having multiple entries in the database
+                        push @domains, $domain ;
+                        
+                        # Sanitise comments
+                        my $qcomment = $db->quote($comment);
+                        
+                        my $cmd = "INSERT or Ignore into [Entries] " .
+                                  "(URL, Source, Count, Comment, Ticked, Uncrossed, All_Lists, whitelist) " .
+                                  "Values (\"$domain\", \"$list\", $domains{$domain}, $qcomment, $ticked, $uncrossed, $all, 0);";
+                        my $result = dbdo ( $db, $cmd, $verbose);
+                    }
                 }
                 print "\n" if $verbose;
             }
+            $result = dbdo( $db, "COMMIT", $verbose);
+
         }
     }
     return @domains;
@@ -133,77 +226,73 @@ sub parse_lists {
 
 sub whitelist {
     # return the list of recommended whitelist URLs.
+    my @entries;
+    push @entries, "s3.amazonws.com";
+    push @entries, ".google.com";
+    push @entries, "googleadservices.com";
+    push @entries, "www.bit.ly";
+    push @entries, "bit.ly";
+    push @entries, "ow.ly";
+    push @entries, "j.mp";
+    push @entries, ".goo.gl";
+    push @entries, "msftncsi.com";
+    push @entries, "www.msftncsi.com";
+    push @entries, ".ea.com";
+    push @entries, "cdn.optimizely.com";
+    push @entries, "res.cloudinary.com";
+    push @entries, ".gravatar.com";
+    push @entries, ".ebay.com";
+    push @entries, ".xkcd.com";
+    push @entries, ".netflix.com";
+    push @entries, "maxmind.com";
+    push @entries, "alluremedia.com.au ";
+    push @entries, ".tomshardware.com";
+    push @entries, ".shopify.com";
+    push @entries, "keystone.mwbsys.com";
+    push @entries, "dl.dropbox.com";
+    push @entries, "api.ipify.org";
+    push @entries, "localhost";
+    push @entries, ".microsoft.com";
+    push @entries, "diaspoir.net";
+    push @entries, "zdbb.net";
+    push @entries, "prf.hn"; # some marketing bullshit that iMore refuses to run without
+    push @entries, "s1.wp.com"; # needed for WP hosted stylesheets
+    push @entries, "stats.wp.com"; # WP Hosted Stats
+    push @entries, "cpan.org"; # CPAN
+    push @entries, ".linkedin.com"; #
+    push @entries, ".cedexis.net"; #
+    push @entries, "list-manage.com"; #
+    push @entries, ".opensubtitles.org"; #
+    push @entries, "cultofmac.com"; #
+    push @entries, "anandtech.com"; #
+    push @entries, "tags.news.com.au"; #
+    push @entries, ".washingtonpost.com"; #
+    push @entries, ".permanenttsb.ie"; #
+    push @entries, "redirectingat.com"; #
+    push @entries, ".youtu.be"; # youtube
+    push @entries, "wistia.net"; #
+    push @entries, "purch.com"; #
+    push @entries, "cmail20.com"; #
+    push @entries, "deadspin.com"; #
+    push @entries, "kinja.com"; #
+    push @entries, "admob.com"; #
+    push @entries, "mailchimp.com"; #
+    push @entries, "typepad.com"; #
+    push @entries, "clickdimensions.com"; #
+    push @entries, "exacttarget.com"; #
+    push @entries, "akamaiedge.net"; #
+    push @entries, "app.link"; #
+    push @entries, "iopscience.iop.org"; #
+    push @entries, "gstatic.com"; # Google Static Domains
+    push @entries, "addthis.com"; # Google Static Domains
+    
     my @whitelist;
-    push @whitelist, "s3.amazonws.com";
-    push @whitelist, "clients2.google.com";
-    push @whitelist, "clients3.google.com";
-    push @whitelist, "clients4.google.com";
-    push @whitelist, "clients5.google.com";
-    push @whitelist, "www.bit.ly";
-    push @whitelist, "bit.ly";
-    push @whitelist, "ow.ly";
-    push @whitelist, "j.mp";
-    push @whitelist, "goo.gl";
-    push @whitelist, "msftncsi.com";
-    push @whitelist, "www.msftncsi.com";
-    push @whitelist, "ea.com";
-    push @whitelist, "cdn.optimizely.com";
-    push @whitelist, "res.cloudinary.com";
-    push @whitelist, "gravatar.com";
-    push @whitelist, "rover.ebay.com";
-    push @whitelist, "imgs.xkcd.com";
-    push @whitelist, "netflix.com";
-    push @whitelist, "alluremedia.com.au ";
-    push @whitelist, "tomshardware.com";
-    push @whitelist, "s.shopify.com";
-    push @whitelist, "keystone.mwbsys.com";
-    push @whitelist, "dl.dropbox.com";
-    push @whitelist, "api.ipify.org";
-    push @whitelist, "localhost";
-    push @whitelist, "microsoft.com";
-    push @whitelist, "google.com";
-    push @whitelist, "diaspoir.net";
-    push @whitelist, "zdbb.net";
-    push @whitelist, "prf.hn"; # some marketing bullshit that iMore refuses to run without
-    push @whitelist, "s1.wp.com"; # needed for WP hosted stylesheets
-    push @whitelist, "stats.wp.com"; # WP Hosted Stats
-    push @whitelist, "cpan.org"; # CPAN
-    push @whitelist, "www.linkedin.com"; #
-    push @whitelist, "ads.linkedin.com"; #
-    push @whitelist, "cedexis.net"; #
-    push @whitelist, "list-manage.com"; #
-    push @whitelist, "opensubtitles.org"; #
-    push @whitelist, "cultofmac.com"; #
-    push @whitelist, "anandtech.com"; #
-    push @whitelist, "tags.news.com.au"; #
-    push @whitelist, ".washingtonpost.com"; #
-    push @whitelist, "permanenttsb.ie"; #
-    push @whitelist, "redirectingat.com"; #
-    push @whitelist, "youtu.be"; # youtube
-    push @whitelist, "wistia.net"; #
-    push @whitelist, "purch.com"; #
-    push @whitelist, "purch.com"; #
-    push @whitelist, "cmail20.com"; #
-    push @whitelist, "deadspin.com"; #
-    push @whitelist, "kinja.com"; #
-    push @whitelist, "mailchimp.com"; #
-    push @whitelist, "typepad.com"; #
-    push @whitelist, "clickdimensions.com"; #
-    push @whitelist, "exacttarget.com"; #
-    push @whitelist, "iopscience.iop.org"; #
-    push @whitelist, "gstatic.com"; # Google Static Domains
-    push @whitelist, "addthis.com"; # Google Static Domains
-    return @whitelist;
-}
-sub get_lists_locally {
-    my $list = shift;
-    my @lists = split ", ", "https://raw.githubusercontent.com/StevenBlack/hosts/master/data/add.Spam/hosts, https://v.firebog.net/hosts/static/w3kbl.txt, https://adaway.org/hosts.txt, https://v.firebog.net/hosts/AdguardDNS.txt, https://s3.amazonaws.com/lists.disconnect.me/simple_ad.txt, https://hosts-file.net/ad_servers.txt, https://v.firebog.net/hosts/Easylist.txt, https://raw.githubusercontent.com/CHEF-KOCH/Spotify-Ad-free/master/Spotifynulled.txt, https://raw.githubusercontent.com/StevenBlack/hosts/master/data/UncheckyAds/hosts, https://v.firebog.net/hosts/Airelle-trc.txt, https://v.firebog.net/hosts/Easyprivacy.txt, https://v.firebog.net/hosts/Prigent-Ads.txt, https://raw.githubusercontent.com/quidsup/notrack/master/trackers.txt, https://raw.githubusercontent.com/StevenBlack/hosts/master/data/add.2o7Net/hosts, https://raw.githubusercontent.com/crazy-max/WindowsSpyBlocker/master/data/hosts/win10/spy.txt, https://v.firebog.net/hosts/Airelle-hrsk.txt, https://s3.amazonaws.com/lists.disconnect.me/simple_malvertising.txt, https://mirror1.malwaredomains.com/files/justdomains, https://hosts-file.net/exp.txt, https://hosts-file.net/emd.txt, https://hosts-file.net/psh.txt, https://mirror.cedia.org.ec/malwaredomains/immortal_domains.txt,  https://bitbucket.org/ethanr/dns-blacklists/raw/8575c9f96e5b4a1308f2f12394abd86d0927a4a0/bad_lists/Mandiant_APT1_Report_Appendix_D.txt, https://v.firebog.net/hosts/Prigent-Malware.txt, https://v.firebog.net/hosts/Prigent-Phishing.txt, https://raw.githubusercontent.com/quidsup/notrack/master/malicious-sites.txt, https://ransomwaretracker.abuse.ch/downloads/RW_DOMBL.txt, https://v.firebog.net/hosts/Shalla-mal.txt, https://raw.githubusercontent.com/StevenBlack/hosts/master/data/add.Risk/hosts, https://zeustracker.abuse.ch/blocklist.php?download=domainblocklist";
-     #http://jansal.googlecode.com/svn/trunk/adblock/hosts, http://www.sa-blacklist.stearns.org/sa-blacklist/sa-blacklist.current, https://easylist-downloads.adblockplus.org/malwaredomains_full.txt, https://easylist-downloads.adblockplus.org/easyprivacy.txt, https://easylist-downloads.adblockplus.org/easylist.txt, https://easylist-downloads.adblockplus.org/fanboy-annoyance.txt, http://www.fanboy.co.nz/adblock/opera/urlfilter.ini,   http://www.fanboy.co.nz/adblock/fanboy-tracking.txt";
-    if ($list == -1) {
-        return @lists;
-    } else {
-        return $lists[$list];
+    foreach my $entry (@entries) {
+        $entry =~ s/\./\\\./g;
+        $entry .= "\$";
+        push @whitelist, $entry;
     }
+    return @whitelist;        
 }
 
 sub sanitize {
