@@ -282,6 +282,7 @@ sub whitelist {
     push @entries, "exacttarget.com"; #
     push @entries, "akamaiedge.net"; #
     push @entries, "app.link"; #
+    push @entries, "chicdn.net"; #
     push @entries, "iopscience.iop.org"; #
     push @entries, "gstatic.com"; # Google Static Domains
     push @entries, "addthis.com"; # Google Static Domains
