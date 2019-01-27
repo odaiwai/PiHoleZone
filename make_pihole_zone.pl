@@ -283,6 +283,9 @@ sub whitelist {
     push @entries, "akamaiedge.net"; #
     push @entries, "app.link"; #
     push @entries, "chicdn.net"; #
+    push @entries, "scorecardresearch.com"; # interferes with deadspin/kinja
+    push @entries, "cdn.digitru.st"; # interferes with deadspin/kinja
+    push @entries, "scroll.com"; # interferes with deadspin/kinja
     push @entries, "iopscience.iop.org"; #
     push @entries, "gstatic.com"; # Google Static Domains
     push @entries, "addthis.com"; # Google Static Domains
