@@ -54,7 +54,7 @@ foreach my $url (@urls) {
         my $result = dbdo($db, "Update [Entries] set whitelist = $whitelisted, reasons = \"$reasons\" where URL = \'$url\';", $verbose);
     } 
 }
-my $result = dbdo( $db, "COMMIT", $verbose);
+$result = dbdo( $db, "COMMIT", $verbose);
 
 # Make the named.file
 open (my $fh, ">", "adblock_named.file");
