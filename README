@@ -1,0 +1,3 @@
+Some scripts to make a named zone file from the various PiHole DNS blocker lists.
+
+The resulting zone file is pretty big and takes a while to load.
