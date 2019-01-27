@@ -1,3 +1,8 @@
 Some scripts to make a named zone file from the various PiHole DNS blocker lists.
 
 The resulting zone file is pretty big and takes a while to load.
+
+This uses my DBHelper library, which is a small little perl library I wrote to 
+make dealing with DBI tasks a little more seamless and not have so much DBI->cruft in the code.
+
+It should be fairly clear what the helper functions do.
