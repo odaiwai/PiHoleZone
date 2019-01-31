@@ -283,6 +283,7 @@ sub whitelist {
     push @entries, "akamaiedge.net"; #
     push @entries, "app.link"; #
     push @entries, "chicdn.net"; #
+    push @entries, "createsend.com"; # interferes with voxmedia.createsend.com
     push @entries, "scorecardresearch.com"; # interferes with deadspin/kinja
     push @entries, "cdn.digitru.st"; # interferes with deadspin/kinja
     push @entries, "scroll.com"; # interferes with deadspin/kinja
