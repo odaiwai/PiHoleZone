@@ -18,17 +18,18 @@ my $download = 0;
 my $zone_limit = 1000000; # how many zones in the file
 my ($ticked, $uncrossed, $all) = (1,0,0);
 
+
 # initialise the database
 my $dbname = "pihole.sqlite";
 my $db = dbconnect($dbname);
 
 # If we're downloading, rebuild the database from scratch
-if ( $download ) {
+if ( $download == 1 ) {
     my $num_tables = create_db($db);
     my @lists = get_lists();
     print "@lists" if $verbose;
     my @domains = parse_lists (@lists);
-    
+
 }
 
 # Apply the whitelist - do this here to allow for changes to the whitelist without
@@ -52,7 +53,7 @@ foreach my $url (@urls) {
         my $reasons = join ";", @reasons;
         print "\t$url: $whitelisted ($reasons)\n" if $verbose;
         my $result = dbdo($db, "Update [Entries] set whitelist = $whitelisted, reasons = \"$reasons\" where URL = \'$url\';", $verbose);
-    } 
+    }
 }
 $result = dbdo( $db, "COMMIT", $verbose);
 
@@ -77,16 +78,16 @@ sub get_lists {
     my @lists;
     my @blocklists;
     my @categories = qw/all_lists uncrossed ticked/;
-    
+
     # Lists from here: https://v.firebog.net/hosts/lists.php
-    $lists[0] = "https://v.firebog.net/hosts/lists.php?type=all";   
+    $lists[0] = "https://v.firebog.net/hosts/lists.php?type=all";
     $lists[1] = "https://v.firebog.net/hosts/lists.php?type=nocross";
-    $lists[2] = "https://v.firebog.net/hosts/lists.php?type=tick";    
-    
-    # 
+    $lists[2] = "https://v.firebog.net/hosts/lists.php?type=tick";
+
+    #
     my $idx = 0;
     my %lists;
-    
+
     my $agent =  WWW::Mechanize->new( autocheck => 1);
     foreach my $list (@lists) {
         print "Retrieving $list..." if $verbose;
@@ -94,7 +95,7 @@ sub get_lists {
         if ($agent->success) {
             my @urls = split("\n", $agent->content());
             my $category = $categories[$idx];
-            
+
             # store the urls
             my $result = dbdo( $db, "BEGIN", $verbose);
             foreach my $url (@urls) {
@@ -127,13 +128,13 @@ sub create_db {
     my $db = shift;
 	drop_all_tables($db, "", $verbose); # Middle var is prefix, for dropping tables of the form
                                         # apple_this, apple_that, etc, where 'apple' is the prefix
-     
+
     my %tables;
     $tables{"lists"} = "URL Text, Ticked Integer, Uncrossed Integer, All_lists Integer";
     $tables{"entries"} = "URL Text Primary Key, Source TEXT, Count Integer, Comment TEXT, Ticked Integer, Uncrossed Integer, All_lists Integer, Whitelist Integer, reasons TEXT";
     my $num_tables = make_db($db, \%tables, $verbose);
     my $result = dbdo($db, "vacuum", $verbose);
-    
+
     return $num_tables;
 }
 
@@ -146,20 +147,20 @@ sub parse_lists {
     my @domains;
     my %domains;
     my @whitelist = whitelist();
-    
+
     my $agent =  WWW::Mechanize->new( autocheck => 1);
     foreach my $list (@lists) {
         print "Getting $list\n" if $verbose;
-        
+
         # Get it's classification from the dbase;
         my @row = row_from_query($db, "select Ticked, Uncrossed, All_lists from [Lists] where url = '$list';", $verbose);
         my ($ticked, $uncrossed, $all) = @row;
         print "\t$list: $ticked, $uncrossed, $all\n" if $verbose;
-        
+
         $agent->get($list);
         if ($agent->success) {
             my @urls = split("\n", $agent->content());
-            
+
             # Parse each list as a separate transaction
             my $result = dbdo( $db, "BEGIN", $verbose);
             foreach my $line (@urls) {
@@ -168,26 +169,26 @@ sub parse_lists {
                 print "\tLine: '$line':" if $verbose;
                 my $domain  = "";
                 my $comment = "";
-                
+
                 # Check for the various types of record:
                 if ($line =~ /^\#+/ ) {
                     # general comment, ignore }
                 }
-                
+
                 # check for a.b.c.d hostname
                 if ($line =~ /^([0-9a-f.:]+)[ \t]+(.*)$/ ) {
                     $domain = $2;
                 }
-                
+
                 # check for just a hostname
                 if ($line =~ /^([a-z0-9.-]+)$/ ) { $domain = $1;}
-                
+
                 # remove trailing comments on some domains
                 if ( $domain =~ /^(.*)\#(.*)$/) {
                     $domain  = $1;
                     $comment = $2;
                 }
-                
+
                 # delete domains that are not legal hostnames
                 my $domain_legal = 1;
                 if ( $domain =~ /^\-|\-$/) { $domain_legal = 0; } # leading/trailing hyphen illegal
@@ -205,10 +206,10 @@ sub parse_lists {
                     if ($domains{$domain}<2) {
                         # to avoid having multiple entries in the database
                         push @domains, $domain ;
-                        
+
                         # Sanitise comments
                         my $qcomment = $db->quote($comment);
-                        
+
                         my $cmd = "INSERT or Ignore into [Entries] " .
                                   "(URL, Source, Count, Comment, Ticked, Uncrossed, All_Lists, whitelist) " .
                                   "Values (\"$domain\", \"$list\", $domains{$domain}, $qcomment, $ticked, $uncrossed, $all, 0);";
@@ -288,16 +289,18 @@ sub whitelist {
     push @entries, "cdn.digitru.st"; # interferes with deadspin/kinja
     push @entries, "scroll.com"; # interferes with deadspin/kinja
     push @entries, "iopscience.iop.org"; #
+    push @entries, "sailthru.com"; #
     push @entries, "gstatic.com"; # Google Static Domains
+    push @entries, "proofpoint.com"; # Google Static Domains
     push @entries, "addthis.com"; # Google Static Domains
-    
+
     my @whitelist;
     foreach my $entry (@entries) {
         $entry =~ s/\./\\\./g;
         $entry .= "\$";
         push @whitelist, $entry;
     }
-    return @whitelist;        
+    return @whitelist;
 }
 
 sub sanitize {
